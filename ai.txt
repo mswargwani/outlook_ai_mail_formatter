@@ -1,0 +1,639 @@
+Option Explicit
+
+'#################################################################################
+'##  Title:    OpenRouter AI Completions for Outlook
+'##
+'##  Description: Uses OpenRouter's FREE model to power AI email features.
+'##               API key is requested once on first run and saved securely.
+'##
+'##  Get API Key: https://openrouter.ai/keys
+'##
+'##  MODEL USED: openrouter/free
+'#################################################################################
+
+'======================================================================
+' CONFIGURATION
+'======================================================================
+Const API_ENDPOINT  As String  = "https://openrouter.ai/api/v1/chat/completions"
+Const MODEL_NAME    As String  = "openrouter/free"
+Const MAX_TOKENS    As String  = "2048"
+Const TEMPERATURE   As String  = "0.7"
+Const MAX_LENGTH    As Integer = 4000
+Const TONE          As String  = "friendly"
+Const LANGUAGE      As String  = "English"
+Const APP_NAME      As String  = "OpenRouterOutlook"
+
+Const DEFAULT_CUSTOM_PROMPT As String = "Summarize this for me <text>"
+
+Dim gCustomPrompt As String
+Dim MY_NAME       As String
+
+'======================================================================
+' FACTORY RESET  (run this macro to wipe your saved API key)
+'======================================================================
+
+Sub FactoryReset()
+    On Error Resume Next
+    DeleteSetting APP_NAME, "Settings", "API_KEY"
+    On Error GoTo 0
+
+    MsgBox "API key has been wiped. You will be asked to enter a new key on the next run.", _
+           vbInformation, "Factory Reset Complete"
+End Sub
+
+'======================================================================
+' EMAIL REPLY FUNCTIONS
+'======================================================================
+
+Sub ReplyYes()
+    On Error GoTo Err_Handler
+    MY_NAME = GetUserName()
+    Dim p As String
+    p = "My name is " & MY_NAME & ". Write a positive/affirmative email reply in " & LANGUAGE & " (" & TONE & " tone) to: "
+    ReplyToSelectedEmails p
+    Exit Sub
+Err_Handler:
+    MsgBox "ReplyYes error: " & Err.Description, vbCritical
+End Sub
+
+Sub ReplyNo()
+    On Error GoTo Err_Handler
+    MY_NAME = GetUserName()
+    Dim p As String
+    p = "My name is " & MY_NAME & ". Write a polite declining/negative email reply in " & LANGUAGE & " (" & TONE & " tone) to: "
+    ReplyToSelectedEmails p
+    Exit Sub
+Err_Handler:
+    MsgBox "ReplyNo error: " & Err.Description, vbCritical
+End Sub
+
+Sub ReplyThanks()
+    On Error GoTo Err_Handler
+    MY_NAME = GetUserName()
+    Dim p As String
+    p = "My name is " & MY_NAME & ". Write a thank-you email reply in " & LANGUAGE & " (" & TONE & " tone) to: "
+    ReplyToSelectedEmails p
+    Exit Sub
+Err_Handler:
+    MsgBox "ReplyThanks error: " & Err.Description, vbCritical
+End Sub
+
+Sub ReplyFollowup()
+    On Error GoTo Err_Handler
+    MY_NAME = GetUserName()
+    Dim p As String
+    p = "My name is " & MY_NAME & ". Write a follow-up email reply in " & LANGUAGE & " (" & TONE & " tone) to: "
+    ReplyToSelectedEmails p
+    Exit Sub
+Err_Handler:
+    MsgBox "ReplyFollowup error: " & Err.Description, vbCritical
+End Sub
+
+Sub AcknowledgeEmail()
+    On Error GoTo Err_Handler
+    MY_NAME = GetUserName()
+    Dim p As String
+    p = "My name is " & MY_NAME & ". Write an acknowledgement reply in " & LANGUAGE & " (" & TONE & " tone) " & _
+        "letting the sender know I received their email and will respond soon: "
+    ReplyToSelectedEmails p
+    Exit Sub
+Err_Handler:
+    MsgBox "AcknowledgeEmail error: " & Err.Description, vbCritical
+End Sub
+
+'======================================================================
+' COMPOSE NEW MAIL  (NEW BUTTON)
+'======================================================================
+
+Sub ComposeNewMail()
+    On Error GoTo Err_Handler
+
+    Dim API_key As Variant
+    API_key = GetOrSetAPIKey()
+    If Trim(API_key) = "" Then Exit Sub
+
+    MY_NAME = GetUserName()
+
+    Dim subject_hint As String
+    subject_hint = InputBox("What should the email be about?" & vbCrLf & _
+                            "(Describe the topic, recipient, and purpose in a few words)", _
+                            "Compose New Email with AI", "")
+    If Trim(subject_hint) = "" Then Exit Sub
+
+    Dim fullPrompt As String
+    fullPrompt = "My name is " & MY_NAME & ". " & _
+                 "Write a complete professional email in " & LANGUAGE & " using a " & TONE & " tone. " & _
+                 "Include a suitable subject line at the very top (prefix it with 'Subject: '). " & _
+                 "Topic / instructions: " & subject_hint
+
+    Dim aiBody As String
+    aiBody = GetOpenRouterResponse(fullPrompt, API_key)
+
+    If InStr(aiBody, "Error") > 0 Or Trim(aiBody) = "" Then
+        MsgBox "AI response failed: " & aiBody, vbCritical, "Compose Error"
+        Exit Sub
+    End If
+
+    ' Extract subject line if AI included one
+    Dim subjectLine As String
+    subjectLine = ""
+    Dim bodyText As String
+    bodyText = aiBody
+
+    Dim subjectPos As Long
+    subjectPos = InStr(1, aiBody, "Subject:", vbTextCompare)
+    If subjectPos > 0 Then
+        Dim lineEnd As Long
+        lineEnd = InStr(subjectPos, aiBody, vbCrLf)
+        If lineEnd = 0 Then lineEnd = InStr(subjectPos, aiBody, vbLf)
+        If lineEnd = 0 Then lineEnd = Len(aiBody) + 1
+        subjectLine = Trim(Mid(aiBody, subjectPos + 8, lineEnd - subjectPos - 8))
+        bodyText = Trim(Mid(aiBody, lineEnd))
+    End If
+
+    ' Create and display new mail item
+    Dim objMail As Outlook.MailItem
+    Set objMail = Application.CreateItem(olMailItem)
+    If subjectLine <> "" Then
+        objMail.Subject = subjectLine
+    Else
+        objMail.Subject = subject_hint
+    End If
+
+    bodyText = Replace(bodyText, "<br/>", vbCrLf)
+    objMail.Body = bodyText
+    objMail.Display
+    Set objMail = Nothing
+    Exit Sub
+
+Err_Handler:
+    MsgBox "ComposeNewMail error: " & Err.Description, vbCritical
+End Sub
+
+'======================================================================
+' TEXT PROCESSING FUNCTIONS
+'======================================================================
+
+Sub Reword()
+    On Error GoTo Err_Handler
+    Dim selectedText As String
+    selectedText = GetSelectedEmailHighlightedText()
+    MY_NAME = GetUserName()
+
+    If Trim(selectedText) <> "" Then
+        Dim p As String
+        p = "My name is " & MY_NAME & ". Rewrite this text in " & LANGUAGE & " to improve grammar, clarity, and professionalism: " & selectedText
+        AI_Completion p
+    Else
+        MsgBox "Please highlight some text in an email first.", vbExclamation, "No Text Selected"
+    End If
+    Exit Sub
+Err_Handler:
+    MsgBox "Reword error: " & Err.Description, vbCritical
+End Sub
+
+Sub GPTText()
+    On Error GoTo Err_Handler
+    Dim selectedText As String
+    selectedText = GetSelectedEmailHighlightedText()
+
+    If Trim(selectedText) = "" Then
+        MsgBox "Please highlight some text in an email first.", vbExclamation, "No Text Selected"
+        Exit Sub
+    End If
+
+    If gCustomPrompt = "" Then gCustomPrompt = DEFAULT_CUSTOM_PROMPT
+
+    Dim prompt As String
+    prompt = InputBox("Describe what you want AI to do:" & vbLf & "<text> = your selected text", _
+                      "Ask AI", gCustomPrompt)
+
+    If Trim(prompt) <> "" Then
+        gCustomPrompt = prompt
+        prompt = Replace(prompt, "<text>", selectedText)
+        AI_Completion prompt
+    End If
+    Exit Sub
+Err_Handler:
+    MsgBox "GPTText error: " & Err.Description, vbCritical
+End Sub
+
+Sub Explain()
+    On Error GoTo Err_Handler
+    Dim selectedText As String
+    selectedText = GetSelectedEmailHighlightedText()
+
+    If Trim(selectedText) <> "" Then
+        AI_Completion "Explain this in simple terms using " & LANGUAGE & ": " & selectedText
+    Else
+        MsgBox "Please highlight some text in an email first.", vbExclamation, "No Text Selected"
+    End If
+    Exit Sub
+Err_Handler:
+    MsgBox "Explain error: " & Err.Description, vbCritical
+End Sub
+
+'======================================================================
+' CORE AI FUNCTIONS
+'======================================================================
+
+Private Sub ReplyToSelectedEmails(prompt As String)
+    On Error GoTo Err_Handler
+
+    Dim API_key As Variant
+    API_key = GetOrSetAPIKey()
+    If Trim(API_key) = "" Then Exit Sub
+
+    Dim objApp      As Outlook.Application
+    Dim objExplorer As Outlook.Explorer
+    Dim objSel      As Outlook.Selection
+    Dim objMail     As Outlook.MailItem
+    Dim objReply    As Outlook.MailItem
+
+    Set objApp      = Outlook.Application
+    Set objExplorer = objApp.ActiveExplorer
+    Set objSel      = objExplorer.Selection
+
+    If objSel.Count = 0 Then
+        MsgBox "Please select an email first.", vbExclamation, "No Email Selected"
+        Exit Sub
+    End If
+
+    ' Grab default signature
+    Dim tmpMail As Outlook.MailItem
+    Set tmpMail = objApp.CreateItem(olMailItem)
+    Dim defaultSig As String
+    defaultSig = tmpMail.HTMLBody
+    tmpMail.Close olDiscard
+    Set tmpMail = Nothing
+
+    Dim emailCount As Integer
+    emailCount = 0
+
+    For Each objMail In objSel
+        If objMail.Class = olMail Then
+            emailCount = emailCount + 1
+
+            On Error Resume Next
+            Set objReply = objMail.Reply
+            If Err.Number <> 0 Then
+                Err.Clear
+                On Error GoTo Err_Handler
+                MsgBox "Cannot create reply for email " & emailCount & ". " & _
+                       "Open it in a separate window and try again.", vbExclamation, "Reply Error"
+                GoTo NextEmail
+            End If
+            On Error GoTo Err_Handler
+
+            Dim fullPrompt As String
+            fullPrompt = prompt
+            If objMail.SenderName <> "" Then
+                fullPrompt = "The sender's name is " & objMail.SenderName & ". " & fullPrompt
+            End If
+            fullPrompt = fullPrompt & vbCrLf & vbCrLf & "Original email:" & vbCrLf & _
+                         Left(objMail.Body, MAX_LENGTH)
+
+            Dim strResponse As String
+            strResponse = GetOpenRouterResponse(fullPrompt, API_key)
+
+            If strResponse <> "" And InStr(strResponse, "Error") = 0 Then
+                strResponse = Replace(strResponse, vbCrLf, "<br/>")
+                strResponse = Replace(strResponse, vbLf, "<br/>")
+                objReply.HTMLBody = strResponse & "<br/><br/>" & defaultSig & "<br/><br/>" & objReply.HTMLBody
+                objReply.To = objMail.SenderEmailAddress
+                If Left(UCase(objMail.Subject), 3) <> "RE:" Then
+                    objReply.Subject = "RE: " & objMail.Subject
+                End If
+                objReply.Display
+            Else
+                MsgBox "AI response failed for email " & emailCount & "." & vbCrLf & strResponse, _
+                       vbExclamation, "API Error"
+            End If
+
+NextEmail:
+            Set objReply = Nothing
+        End If
+    Next
+
+    If emailCount = 0 Then
+        MsgBox "No valid emails were selected.", vbExclamation, "No Emails"
+    End If
+
+    Set objMail     = Nothing
+    Set objSel      = Nothing
+    Set objExplorer = Nothing
+    Set objApp      = Nothing
+    Exit Sub
+
+Err_Handler:
+    MsgBox "ReplyToSelectedEmails error: " & Err.Description, vbCritical
+End Sub
+
+Private Sub AI_Completion(myprompt As String)
+    On Error GoTo Err_Handler
+
+    Dim API_key As Variant
+    API_key = GetOrSetAPIKey()
+    If Trim(API_key) = "" Then Exit Sub
+
+    If Trim(myprompt) = "" Then
+        MsgBox "No text provided.", vbExclamation, "Empty Input"
+        Exit Sub
+    End If
+
+    Dim aiResponse As String
+    aiResponse = GetOpenRouterResponse(myprompt, API_key)
+    aiResponse = Replace(aiResponse, "<br/>", vbCrLf)
+
+    Dim objMail As MailItem
+    Set objMail = Application.CreateItem(olMailItem)
+    objMail.Subject = "AI Output"
+    objMail.Body = aiResponse
+    objMail.Display
+    Exit Sub
+
+Err_Handler:
+    MsgBox "AI_Completion error: " & Err.Description, vbCritical
+End Sub
+
+'======================================================================
+' SINGLE-MODEL API CALL
+'======================================================================
+
+Function GetOpenRouterResponse(myprompt As String, API_key As Variant) As String
+    On Error GoTo Err_Handler
+
+    Dim prompt As String
+    prompt = CleanJSONString(myprompt)
+
+    ' Strip everything from "From:" onward (quoted mail)
+    Dim cutPos As Long
+    cutPos = InStr(prompt, "From:")
+    If cutPos > 0 Then prompt = Left(prompt, cutPos - 1)
+    prompt = Left(Trim(prompt), MAX_LENGTH)
+
+    If Trim(prompt) = "" Then
+        GetOpenRouterResponse = "Error: Empty prompt"
+        Exit Function
+    End If
+
+    ' Create HTTP object
+    Dim http As Object
+    On Error Resume Next
+    Set http = CreateObject("MSXML2.XMLHTTP")
+    If Err.Number <> 0 Then
+        Err.Clear
+        Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+        If Err.Number <> 0 Then
+            Err.Clear
+            Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
+            If Err.Number <> 0 Then
+                GetOpenRouterResponse = "Error: Cannot create HTTP request object"
+                Exit Function
+            End If
+        End If
+    End If
+    On Error GoTo Err_Handler
+
+    Dim body As String
+    body = "{" & _
+           """model"":""" & MODEL_NAME & """," & _
+           """messages"":[{""role"":""user"",""content"":""" & prompt & """}]," & _
+           """max_tokens"":" & MAX_TOKENS & "," & _
+           """temperature"":" & TEMPERATURE & _
+           "}"
+
+    http.Open "POST", API_ENDPOINT, False
+    On Error Resume Next
+    http.SetTimeouts 30000, 30000, 30000, 90000
+    On Error GoTo Err_Handler
+
+    http.SetRequestHeader "Content-Type", "application/json"
+    http.SetRequestHeader "Authorization", "Bearer " & API_key
+    http.SetRequestHeader "HTTP-Referer", "https://outlook.office.com"
+    http.SetRequestHeader "X-Title", "Outlook AI"
+    http.Send body
+
+    Select Case http.Status
+        Case 200
+            Dim parsed As String
+            parsed = ParseChatResponse(http.responseText)
+            If InStr(parsed, "Error") = 0 And parsed <> "" Then
+                parsed = ReplaceBackslash(parsed)
+                parsed = Replace(parsed, "\n", "<br/>")
+                parsed = Replace(parsed, "\\", "\")
+                GetOpenRouterResponse = parsed
+            Else
+                GetOpenRouterResponse = "Error parsing response: " & parsed
+            End If
+        Case 401
+            GetOpenRouterResponse = "Error 401: Invalid API key. Run FactoryReset() then try again."
+        Case 404
+            GetOpenRouterResponse = "Error 404: Model not found."
+        Case 429
+            GetOpenRouterResponse = "Error 429: Rate limited. Please wait and try again."
+        Case 502, 503
+            GetOpenRouterResponse = "Error " & http.Status & ": Model temporarily unavailable."
+        Case Else
+            GetOpenRouterResponse = "Error: HTTP " & http.Status
+    End Select
+    Exit Function
+
+Err_Handler:
+    GetOpenRouterResponse = "Network Error: " & Err.Description
+End Function
+
+'======================================================================
+' SETUP & TEST CONNECTION
+'======================================================================
+
+Sub TestConnection()
+    On Error GoTo Err_Handler
+    Dim API_key As Variant
+    API_key = GetOrSetAPIKey()
+    If Trim(API_key) = "" Then Exit Sub
+
+    MsgBox "Testing connection to OpenRouter..." & vbCrLf & vbCrLf & _
+           "Model: " & MODEL_NAME & vbCrLf & "Please wait...", vbInformation, "Testing"
+
+    Dim resp As String
+    resp = GetOpenRouterResponse("Say hello and state your model name.", API_key)
+
+    If InStr(resp, "Error") = 0 And Trim(resp) <> "" Then
+        MsgBox "SUCCESS!" & vbCrLf & vbCrLf & "Model: " & MODEL_NAME & vbCrLf & vbCrLf & _
+               "Response:" & vbCrLf & Left(resp, 300), vbInformation, "Connection OK"
+    Else
+        MsgBox "Connection FAILED." & vbCrLf & vbCrLf & resp & vbCrLf & vbCrLf & _
+               "If your API key is wrong, run the FactoryReset macro.", vbCritical, "Test Failed"
+    End If
+    Exit Sub
+Err_Handler:
+    MsgBox "TestConnection error: " & Err.Description, vbCritical
+End Sub
+
+'======================================================================
+' HELPER FUNCTIONS
+'======================================================================
+
+Function GetOrSetAPIKey() As Variant
+    On Error Resume Next
+    Dim key As String
+    key = GetSetting(APP_NAME, "Settings", "API_KEY", "")
+
+    If Trim(key) = "" Then
+        Dim newKey As String
+        newKey = InputBox( _
+            "-------------------------------------------" & vbLf & _
+            "   FIRST RUN: OPENROUTER SETUP" & vbLf & _
+            "-------------------------------------------" & vbLf & vbLf & _
+            "Get your FREE API key at:" & vbLf & _
+            "  https://openrouter.ai/keys" & vbLf & vbLf & _
+            "Paste your API key below:", _
+            "API Key Required", "")
+
+        If Trim(newKey) <> "" And Len(newKey) > 15 Then
+            SaveSetting APP_NAME, "Settings", "API_KEY", newKey
+            key = newKey
+            MsgBox "API key saved! You won't be asked again.", vbInformation, "Setup Complete"
+        Else
+            MsgBox "A valid API key is required to continue.", vbExclamation, "Setup Cancelled"
+            key = ""
+        End If
+    End If
+
+    GetOrSetAPIKey = key
+    On Error GoTo 0
+End Function
+
+Function ParseChatResponse(ByVal response As String) As String
+    On Error Resume Next
+    Dim content As String
+    content = ""
+    Dim pos1 As Long, pos2 As Long
+
+    pos1 = InStr(response, """content"":""")
+    If pos1 > 0 Then
+        pos1 = pos1 + 11
+        pos2 = pos1
+        Do While pos2 <= Len(response)
+            pos2 = InStr(pos2, response, """")
+            If pos2 = 0 Then Exit Do
+            If Mid(response, pos2 - 1, 1) <> "\" Then Exit Do
+            pos2 = pos2 + 1
+        Loop
+        If pos2 > pos1 And pos2 <= Len(response) Then
+            content = Mid(response, pos1, pos2 - pos1)
+        End If
+    End If
+
+    If content = "" Then
+        pos1 = InStr(response, """content"": """)
+        If pos1 > 0 Then
+            pos1 = pos1 + 12
+            pos2 = InStr(pos1, response, """")
+            If pos2 > pos1 Then content = Mid(response, pos1, pos2 - pos1)
+        End If
+    End If
+
+    ParseChatResponse = IIf(content = "", "Error: Could not parse response", content)
+    On Error GoTo 0
+End Function
+
+Function CleanJSONString(inputStr As String) As String
+    On Error Resume Next
+    Dim result As String
+    result = inputStr
+    result = Replace(result, vbCrLf, " ")
+    result = Replace(result, vbCr, " ")
+    result = Replace(result, vbLf, " ")
+    result = Replace(result, """", "'")
+    result = Replace(result, "\", "")
+    result = Replace(result, vbTab, " ")
+
+    Dim i As Long, clean As String
+    clean = ""
+    For i = 1 To Len(result)
+        Dim c As Long
+        c = Asc(Mid(result, i, 1))
+        If c >= 32 And c <= 126 Then
+            clean = clean & Mid(result, i, 1)
+        ElseIf c = 9 Or c = 10 Or c = 13 Then
+            clean = clean & " "
+        End If
+    Next i
+
+    Do While InStr(clean, "  ") > 0
+        clean = Replace(clean, "  ", " ")
+    Loop
+    CleanJSONString = Trim(clean)
+    On Error GoTo 0
+End Function
+
+Function ReplaceBackslash(text As Variant) As String
+    On Error Resume Next
+    Dim i As Integer, out As String
+    out = ""
+    For i = 1 To Len(text)
+        If i < Len(text) Then
+            Dim pair As String
+            pair = Mid(text, i, 2)
+            If pair = "\" & Chr(34) Then
+                out = out & Chr(34) : i = i + 1
+            ElseIf pair = "\n" Then
+                out = out & vbCrLf : i = i + 1
+            ElseIf pair = "\t" Then
+                out = out & vbTab : i = i + 1
+            Else
+                out = out & Mid(text, i, 1)
+            End If
+        Else
+            out = out & Mid(text, i, 1)
+        End If
+    Next i
+    ReplaceBackslash = out
+    On Error GoTo 0
+End Function
+
+Function GetSelectedEmailHighlightedText() As String
+    On Error Resume Next
+    Dim objInspector As Inspector
+    Dim objItem As Object
+
+    Set objInspector = Application.ActiveInspector
+    Set objItem = objInspector.CurrentItem
+
+    If objItem Is Nothing Then
+        If Application.ActiveExplorer.Selection.Count > 0 Then
+            Set objItem = Application.ActiveExplorer.Selection.Item(1)
+            Set objInspector = objItem.GetInspector
+        End If
+    End If
+
+    If objItem Is Nothing Then
+        GetSelectedEmailHighlightedText = "" : Exit Function
+    End If
+
+    If TypeOf objItem Is MailItem Then
+        Dim objWord As Object
+        Set objWord = objInspector.WordEditor
+        If Not objWord Is Nothing Then
+            Dim objSel As Object
+            Set objSel = objWord.Application.Selection
+            If objSel.Type = 2 Then
+                GetSelectedEmailHighlightedText = objSel.text
+            Else
+                GetSelectedEmailHighlightedText = ""
+            End If
+        End If
+    Else
+        GetSelectedEmailHighlightedText = ""
+    End If
+    On Error GoTo 0
+End Function
+
+Function GetUserName() As String
+    On Error Resume Next
+    GetUserName = Outlook.Application.GetNamespace("MAPI").CurrentUser.Name
+    If GetUserName = "" Then GetUserName = Environ("USERNAME")
+    On Error GoTo 0
+End Function
